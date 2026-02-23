@@ -1,0 +1,17 @@
+GitLab link -> https://gitlab.com/gitlab-org/ci-sample-projects/parent-child-pipelines
+            -> https://gitlab.com/gitlab-org/cli (having license)
+            -> https://gitlab.com/gitlab-org/gitlab 
+            -> https://gitlab.com/gitlab-org/gitlab-runner
+
+Steps to run:
+1. run app.py
+2. Click on live on index.html 
+3. Paste GitLab link
+
+
+
+run backend ->
+python -m uvicorn app:app --reload
+
+run frontend ->
+npm run dev

@@ -1,0 +1,7 @@
+GitLab link -> https://gitlab.com/gitlab-org/ci-sample-projects/parent-child-pipelines
+
+Steps to run:
+1. In app.py run python -m uvicorn app:app --reload
+
+2. Click on live on index.html 
+3. Paste GitLab link

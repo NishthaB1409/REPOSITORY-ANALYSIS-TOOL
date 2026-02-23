@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>GitLab Fork Statistics</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 40px;
+    }
+    input, button {
+      padding: 8px;
+      width: 400px;
+    }
+    button {
+      margin-top: 10px;
+    }
+    .card {
+      border: 1px solid #ddd;
+      padding: 15px;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+
+<h2>GitLab Fork Statistics Dashboard</h2>
+
+<input id="repoUrl" placeholder="Enter public GitLab repository URL" />
+<br>
+<button onclick="analyzeRepo()">Analyze Repository</button>
+
+<div id="output"></div>
+
+<canvas id="forkChart" width="600" height="300"></canvas>
+
+<script>
+async function analyzeRepo() {
+  const url = document.getElementById("repoUrl").value;
+  document.getElementById("output").innerHTML = "Loading...";
+
+  const response = await fetch("http://127.0.0.1:8000/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repo_url: url })
+  });
+
+  const data = await response.json();
+  displayResult(data);
+}
+
+function displayResult(data) {
+  const project = data.project;
+  const forks = data.forks.details;
+
+  document.getElementById("output").innerHTML = `
+    <div class="card">
+      <b>Project:</b> ${project.name}<br>
+      <b>License:</b> ${project.license}<br>
+      <b>Default Branch:</b> ${project.default_branch}<br>
+      <b>Total Commits:</b> ${project.total_commits}<br>
+      <b>Total Forks:</b> ${data.forks.count}
+    </div>
+  `;
+
+  const labels = forks.map(f => f.name);
+  const commits = forks.map(f => f.commits);
+
+  new Chart(document.getElementById("forkChart"), {
+    type: "bar",
+    data: {
+      labels: labels,
+      datasets: [{
+        label: "Commits per Fork",
+        data: commits
+      }]
+    }
+  });
+}
+</script>
+
+</body>
+</html>
