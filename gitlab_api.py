@@ -1,11 +1,17 @@
 # gitlab_api.py
 import requests
+from requests.adapters import HTTPAdapter
 from urllib.parse import quote_plus
 from urllib.parse import parse_qs, urlparse
 import subprocess
 
 GITLAB_API_URL = "https://gitlab.com/api/v4"
 REQUEST_TIMEOUT_SECONDS = 20
+
+# Reuse HTTP connections across requests to reduce TLS/connection overhead.
+_session = requests.Session()
+_session.mount("https://", HTTPAdapter(pool_connections=32, pool_maxsize=32))
+_session.mount("http://", HTTPAdapter(pool_connections=32, pool_maxsize=32))
 
 
 # ---------------------- GitLab API functions ---------------------- #
@@ -24,7 +30,7 @@ def get_project_info(project_path: str) -> dict:
     Fetch project metadata from GitLab
     """
     encoded_path = quote_plus(project_path)
-    response = requests.get(
+    response = _session.get(
         f"{GITLAB_API_URL}/projects/{encoded_path}",
         params={"license": "true"},
         timeout=REQUEST_TIMEOUT_SECONDS
@@ -37,7 +43,7 @@ def get_forks(project_id: int) -> list:
     """
     Fetch all forks of a project
     """
-    response = requests.get(
+    response = _session.get(
         f"{GITLAB_API_URL}/projects/{project_id}/forks",
         params={"per_page": 30},
         timeout=REQUEST_TIMEOUT_SECONDS
@@ -50,7 +56,7 @@ def get_project_info_by_id(project_id: int) -> dict:
     """
     Fetch project metadata by project ID from GitLab
     """
-    response = requests.get(
+    response = _session.get(
         f"{GITLAB_API_URL}/projects/{project_id}",
         params={"license": "true"},
         timeout=REQUEST_TIMEOUT_SECONDS
@@ -67,7 +73,7 @@ def get_branch_names(project_id: int) -> list:
     page = 1
 
     while True:
-        response = requests.get(
+        response = _session.get(
             f"{GITLAB_API_URL}/projects/{project_id}/repository/branches",
             params={"per_page": 100, "page": page},
             timeout=REQUEST_TIMEOUT_SECONDS
@@ -89,12 +95,13 @@ def get_total_commit_count(project_id: int, branch: str = None) -> int:
     Returns total commit count for a branch (or default branch).
     Uses X-Total when available; falls back to Link header parsing.
     """
+    # Use a larger page size so exact page-probing needs fewer requests.
     per_page = 100
     params = {"per_page": per_page}
     if branch:
         params["ref_name"] = branch
 
-    response = requests.get(
+    response = _session.get(
         f"{GITLAB_API_URL}/projects/{project_id}/repository/commits",
         params=params,
         timeout=REQUEST_TIMEOUT_SECONDS
@@ -107,36 +114,14 @@ def get_total_commit_count(project_id: int, branch: str = None) -> int:
 
     total_pages_header = response.headers.get("X-Total-Pages")
     if total_pages_header is not None:
-        total_pages = int(total_pages_header)
-        if total_pages <= 1:
-            commits = response.json()
-            return len(commits) if isinstance(commits, list) else 0
-
-        last_page_response = requests.get(
-            f"{GITLAB_API_URL}/projects/{project_id}/repository/commits",
-            params={**params, "page": total_pages},
-            timeout=REQUEST_TIMEOUT_SECONDS
-        )
-        last_page_response.raise_for_status()
-        last_page_commits = last_page_response.json()
-        last_page_count = len(last_page_commits) if isinstance(last_page_commits, list) else 0
-        return (total_pages - 1) * per_page + last_page_count
+        return int(total_pages_header)
 
     # Fallback for GitLab responses that omit X-Total/X-Total-Pages.
     last_link = response.links.get("last", {}).get("url")
     if last_link:
         last_page = parse_qs(urlparse(last_link).query).get("page", [None])[0]
         if last_page is not None:
-            last_page_int = int(last_page)
-            last_page_response = requests.get(
-                f"{GITLAB_API_URL}/projects/{project_id}/repository/commits",
-                params={**params, "page": last_page_int},
-                timeout=REQUEST_TIMEOUT_SECONDS
-            )
-            last_page_response.raise_for_status()
-            last_page_commits = last_page_response.json()
-            last_page_count = len(last_page_commits) if isinstance(last_page_commits, list) else 0
-            return (last_page_int - 1) * per_page + last_page_count
+            return int(last_page)
 
     commits = response.json()
     if not isinstance(commits, list):
@@ -146,38 +131,43 @@ def get_total_commit_count(project_id: int, branch: str = None) -> int:
     if "next" not in response.links:
         return len(commits)
 
+    page_size_cache = {}
+
     def page_size(page: int) -> int:
+        if page in page_size_cache:
+            return page_size_cache[page]
+
         page_params = {"per_page": per_page, "page": page}
         if branch:
             page_params["ref_name"] = branch
 
-        page_response = requests.get(
+        page_response = _session.get(
             f"{GITLAB_API_URL}/projects/{project_id}/repository/commits",
             params=page_params,
             timeout=REQUEST_TIMEOUT_SECONDS
         )
         if page_response.status_code != 200:
+            page_size_cache[page] = 0
             return 0
 
         page_commits = page_response.json()
         if not isinstance(page_commits, list):
+            page_size_cache[page] = 0
             return 0
-        return len(page_commits)
+        page_size_cache[page] = len(page_commits)
+        return page_size_cache[page]
 
-    # When GitLab only exposes "next", use bounded probing to stay fast.
+    # When GitLab only exposes "next", determine the exact last page.
     low = 1
-    high = 10
+    high = 2
     high_size = page_size(high)
     while high_size > 0 and high < 1_000_000:
         low = high
         high *= 10
         high_size = page_size(high)
 
-    # Bounded binary search (6 iterations) keeps speed acceptable
-    # while giving more accurate counts for ranking.
-    for _ in range(6):
-        if low + 1 >= high:
-            break
+    # Exact binary search for last non-empty page.
+    while low + 1 < high:
         mid = (low + high) // 2
         if page_size(mid) > 0:
             low = mid
